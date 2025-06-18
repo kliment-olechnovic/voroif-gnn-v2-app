@@ -1,0 +1,308 @@
+#!/bin/bash
+
+function print_help_and_exit
+{
+cat >&2 << 'EOF'
+
+'voronota-js-fast-iface-data-graph-v2-stats' script analyzes or transform graphs produced by 'voronota-js-fast-iface-data-graph-v2'.
+
+Options:
+    --input-prefix                                string     input path prefix for graph data, default is '_stdin' to read prefixes from stdin
+    --calculate-columns-statistics                string     output file path prefix for computed statistics of columns
+    --standardize-columns-using-statistics        string     input file path for statistics of columns to use
+    --output-data-prefix                          string     output data files prefix
+    --help | -h                                              flag to display help message and exit
+
+Standard inpu:
+    list of input file path prefix
+
+Standard output:
+    list of generated output file path prefixes
+
+Examples:
+
+    find ./input_complexes/ -type f -name '*.pdb' \
+    | voronota-js-fast-iface-data-graph-v2 --config ./config/akbps --input _list --processors 8 --output-data-prefix ./data_graphs_raw/ \
+    | voronota-js-fast-iface-data-graph-v2-stats --calculate-columns-statistics ./data_graph_statistics_
+
+    find ./input_complexes/ -type f -name '*.pdb' \
+    | voronota-js-fast-iface-data-graph-v2 --config ./config/akbps --input _list --processors 8 --output-data-prefix ./data_graphs_raw/ \
+    | voronota-js-fast-iface-data-graph-v2-stats --standardize-columns-using-statistics ./data_graph_statistics_ --output-data-prefix ./data_graphs_standardized/
+    
+    voronota-js-fast-iface-data-graph-v2-stats --input-prefix ./data_graphs_raw/model1.pdb_ --standardize-columns-using-statistics ./data_graph_statistics_ --output-data-prefix ./data_graphs_standardized/
+
+EOF
+exit 1
+}
+
+readonly ZEROARG=$0
+ALLARGS=("$@")
+
+if [[ $ZEROARG == *"/"* ]]
+then
+	cd "$(dirname ${ZEROARG})"
+	export PATH="$(pwd):${PATH}"
+	cd - &> /dev/null
+fi
+
+export LC_ALL=C
+
+command -v R &> /dev/null || { echo >&2 "Error: 'R' executable not in binaries path"; exit 1; }
+
+INPREFIXSOURCE="_stdin"
+OUTSTATSFILEPREFIX=""
+INSTATSFILEPREFIX=""
+OUTPREFIX=""
+HELP_MODE="false"
+
+while [[ $# > 0 ]]
+do
+	OPTION="$1"
+	OPTARG="$2"
+	shift
+	case $OPTION in
+	--input-prefix)
+		INPREFIXSOURCE="$OPTARG"
+		shift
+		;;
+	--calculate-columns-statistics)
+		OUTSTATSFILEPREFIX="$OPTARG"
+		shift
+		;;
+	--standardize-columns-using-statistics)
+		INSTATSFILEPREFIX="$OPTARG"
+		shift
+		;;
+	--output-data-prefix)
+		OUTPREFIX="$OPTARG"
+		shift
+		;;
+	-h|--help)
+		HELP_MODE="true"
+		;;
+	*)
+		echo >&2 "Error: invalid command line option '$OPTION'"
+		exit 1
+		;;
+	esac
+done
+
+if [ "$HELP_MODE" == "true" ]
+then
+	print_help_and_exit
+fi
+
+if [ -z "$OUTSTATSFILEPREFIX" ] && [ -z "$INSTATSFILEPREFIX" ]
+then
+	echo >&2 "Error: no operation arguments provided"
+	exit 1
+fi
+
+if [ -n "$INSTATSFILEPREFIX" ] && [ -z "$OUTPREFIX" ]
+then
+	echo >&2 "Error: standardization was requested, but output data prefix was not provided"
+	exit 1
+fi
+
+if [ -z "$INSTATSFILEPREFIX" ] && [ -n "$OUTPREFIX" ]
+then
+	echo >&2 "Error: standardization was not requested, but output data prefix was provided"
+	exit 1
+fi
+
+################################################################################
+
+readonly TMPLDIR=$(mktemp -d)
+trap "rm -r $TMPLDIR" EXIT
+
+if [ "$INPREFIXSOURCE" == "_stdin" ]
+then
+	cat | egrep . | sort | uniq > "$TMPLDIR/input_list"
+else
+	echo "$INPREFIXSOURCE" | tr ' ' '\n' | tr '\t' '\n' | egrep '.' > "$TMPLDIR/input_list"
+fi
+
+if [ ! -s "$TMPLDIR/input_list" ]
+then
+	echo >&2 "Error: no stdin data"
+	exit 1
+fi
+
+while read -r INPREFIX
+do
+	if [ ! -s "${INPREFIX}nodes" ]
+	then
+		echo >&2 "Error: input graph nodes file '${INPREFIX}nodes' does not exist"
+		exit 1
+	fi
+	
+	if [ ! -s "${INPREFIX}links" ]
+	then
+		echo >&2 "Error: input graph links file '${INPREFIX}links' does not exist"
+		exit 1
+	fi
+done \
+< "$TMPLDIR/input_list"
+
+################################################################################
+
+if [ -n "$OUTSTATSFILEPREFIX" ]
+then
+
+cat "$TMPLDIR/input_list" | sed 's|$|nodes|' | xargs -L 100 cat \
+| awk '{if(NR==1 || $1!="ID1"){print $0}}' \
+> $TMPLDIR/nodes
+
+cat "$TMPLDIR/input_list" | sed 's|$|links|' | xargs -L 100 cat \
+| awk '{if(NR==1 || $1!="ir_contact_index1"){print $0}}' \
+> $TMPLDIR/links
+
+cd "$TMPLDIR"
+
+R --vanilla << 'EOF' > /dev/null
+for(obj in c("nodes", "links"))
+{
+	dt=read.table(obj, header=TRUE, stringsAsFactors=FALSE);
+	valcolnames=setdiff(colnames(dt), c("ID1", "ID2", "contact_index", "ir_contact_index", "ir_contact_index1", "ir_contact_index2"));
+	if(is.element("area", valcolnames))
+	{
+		normalizeable_valcolnames=setdiff(valcolnames, c("area", "distance", "IRCAD_sum", "IRCAD_goodness"));
+		for(normalizeable_valcolname in normalizeable_valcolnames)
+		{
+			dt[,paste0(normalizeable_valcolname, "_coeff")]=dt[,normalizeable_valcolname]/dt$area;
+		}
+		valcolnames=c(valcolnames, paste0(normalizeable_valcolnames, "_coeff"));
+	}
+	M=length(valcolnames);
+	summary=data.frame(name=valcolnames, mean=rep(0, M), sd=rep(0, M), median=rep(0, M), min=rep(0, M), max=rep(0, M));
+	for(i in 1:M)
+	{
+		valcolname=valcolnames[i];
+		x=dt[,valcolname];
+		summary$mean[i]=mean(x);
+		summary$sd[i]=sd(x);
+		summary$median[i]=median(x);
+		summary$min[i]=min(x);
+		summary$max[i]=max(x);
+	}
+	write.table(summary, file=paste0("stats_of_", obj), quote=FALSE, row.names=FALSE, col.names=TRUE, sep=" ");
+}
+EOF
+
+R --vanilla << 'EOF' > /dev/null
+dt=read.table("nodes", header=TRUE, stringsAsFactors=FALSE);
+valcolnames=setdiff(colnames(dt), c("ID1", "ID2", "contact_index", "ir_contact_index", "distance", "IRCAD_sum", "IRCAD_goodness"));
+if(is.element("area", valcolnames))
+{
+	normalizeable_valcolnames=setdiff(valcolnames, c("area", "distance", "IRCAD_sum", "IRCAD_goodness"));
+	for(normalizeable_valcolname in normalizeable_valcolnames)
+	{
+		dt[,paste0(normalizeable_valcolname, "_coeff")]=dt[,normalizeable_valcolname]/dt$area;
+	}
+	valcolnames=c(valcolnames, paste0(normalizeable_valcolnames, "_coeff"));
+}
+dt=dt[,valcolnames];
+dt=scale(dt);
+pca_result=prcomp(dt);
+NComp=10;
+pca_rotation_matrix=pca_result$rotation[,1:NComp];
+pca_rotation_dt=as.data.frame(pca_rotation_matrix);
+pca_rotation_dt$name=rownames(pca_rotation_dt);
+pca_rotation_dt=pca_rotation_dt[,c("name", setdiff(colnames(pca_rotation_dt), "name"))];
+stats=read.table("stats_of_nodes", header=TRUE, stringsAsFactors=FALSE);
+stats$orig_order=1:nrow(stats);
+summary=merge(stats, pca_rotation_dt, all.x=TRUE);
+summary=summary[order(summary$orig_order), setdiff(colnames(summary), "orig_order")];
+for(pccolname in paste0("PC", 1:NComp))
+{
+	summary[is.na(summary[,pccolname]), pccolname]=0;
+}
+write.table(summary, file="stats_of_nodes", quote=FALSE, row.names=FALSE, col.names=TRUE, sep=" ");
+EOF
+
+cd - &> /dev/null
+
+mkdir -p "$(dirname ${OUTSTATSFILEPREFIX}file)"
+
+cat "${TMPLDIR}/stats_of_nodes" | column -t > "${OUTSTATSFILEPREFIX}nodes"
+cat "${TMPLDIR}/stats_of_links" | column -t > "${OUTSTATSFILEPREFIX}links"
+
+fi
+
+################################################################################
+
+if [ -n "$INSTATSFILEPREFIX" ]
+then
+
+if [ ! -s "${INSTATSFILEPREFIX}nodes" ]
+then
+	echo >&2 "Error: input file '${INSTATSFILEPREFIX}nodes' does not exist"
+	exit 1
+fi
+
+if [ ! -s "${INSTATSFILEPREFIX}links" ]
+then
+	echo >&2 "Error: input file '${INSTATSFILEPREFIX}links' does not exist"
+	exit 1
+fi
+
+mkdir -p "$(dirname ${OUTPREFIX}file)"
+
+cat "$TMPLDIR/input_list" \
+| while read -r INPREFIX
+do
+	for OBJNAME in nodes links
+do
+	STATSFILE="${INSTATSFILEPREFIX}${OBJNAME}"
+	INFILE="${INPREFIX}${OBJNAME}"
+	INFILEBASENAME="$(basename $INFILE)"
+	OUTFILE="${OUTPREFIX}${INFILEBASENAME}.csv"
+
+R --vanilla --args "$STATSFILE" "$INFILE" "$OUTFILE" << 'EOF' > /dev/null
+args=commandArgs(TRUE);
+statsfile=args[1];
+infile=args[2];
+outfile=args[3];
+stats=read.table(statsfile, header=TRUE, stringsAsFactors=FALSE);
+dt=read.table(infile, header=TRUE, stringsAsFactors=FALSE);
+N=nrow(dt);
+zscore_limit_min=rep(-5, N);
+zscore_limit_max=rep(5, N);
+valcolnames=setdiff(colnames(dt), c("ID1", "ID2", "contact_index", "ir_contact_index", "ir_contact_index1", "ir_contact_index2"));
+if(is.element("area", valcolnames))
+{
+	normalizeable_valcolnames=setdiff(valcolnames, c("area", "distance", "IRCAD_sum", "IRCAD_goodness"));
+	for(normalizeable_valcolname in normalizeable_valcolnames)
+	{
+		dt[,paste0(normalizeable_valcolname, "_coeff")]=dt[,normalizeable_valcolname]/dt$area;
+	}
+	valcolnames=c(valcolnames, paste0(normalizeable_valcolnames, "_coeff"));
+}
+valcolnames=intersect(valcolnames, stats$name);
+for(valcolname in valcolnames)
+{
+	substats=stats[which(stats$name==valcolname),];
+	sx=(dt[,valcolname]-substats$mean)/substats$sd;
+	dt[,valcolname]=pmin(pmax(zscore_limit_min, sx), zscore_limit_max);
+}
+if(is.element("PC1", colnames(stats)))
+{
+	dt_matrix=as.matrix(dt[,stats$name[which(stats$PC1!=0)]]);
+	pca_rotation_matrix=as.matrix(stats[which(stats$PC1!=0), paste0("PC", 1:10)]);
+	dt_pcs=dt_matrix %*% pca_rotation_matrix;
+	dt_pcs=as.data.frame(dt_pcs);
+	dt=cbind(dt, dt_pcs);
+}
+orderedcolnames=colnames(dt);
+lastcolnames=c("IRCAD_sum", "IRCAD_goodness");
+orderedcolnames=c(setdiff(orderedcolnames, lastcolnames), intersect(orderedcolnames, lastcolnames));
+write.table(dt[,orderedcolnames], file=outfile, quote=FALSE, row.names=FALSE, col.names=TRUE, sep=",");
+EOF
+
+	done
+done
+
+fi
+
+exit 0
+

@@ -1,0 +1,5 @@
+set_name           set2
+source_name        archAjs
+num_of_conv        nc3
+training_id        an_9_is_113_nc_3_hs1_32_hs2_32_ah_8_do_0.25_lr_0.01_wd_0.0001_ss_10_sg_0.5_me_100_it_0.001_ip_101
+modelfile_state    ../train_gnn_v2_using_v1_data/archAjs/output/saved_trained_models_as_state_dicts/an_9_is_113_nc_3_hs1_32_hs2_32_ah_8_do_0.25_lr_0.01_wd_0.0001_ss_10_sg_0.5_me_100_it_0.001_ip_101/epoch100.pth

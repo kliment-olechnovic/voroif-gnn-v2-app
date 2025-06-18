@@ -1,0 +1,481 @@
+#!/bin/bash
+
+function print_help_and_exit
+{
+cat >&2 << 'EOF'
+
+'voronota-js-voroif-gnn-v2' scores protein-protein interfaces using the VoroIF-GNN-v2 method
+
+Options:
+    --gnn-bundle-dir          string     GNN bundle directory, default is the script directory
+    --gnn-models-dir          string     directory with GNN models files, default is '${GNN_BUNDLE_DIR}/trained_gnn_models/set1'
+    --conda-path              string     conda installation path, default is ''
+    --conda-env               string     conda environment name, default is 'voroif-gnn-v2-env'
+    --processors              number     suggested maximum number of processors to run in parallel, default is 1
+    --stdin-file              string     input file path to replace stdin, default is '_stream'
+    --as-assembly             string     flag to treat input files as biological assemblies
+    --restrict-input          string     query to restrict input atoms, default is '[]'
+    --run-faspr               string     path to FASPR data library to rebuild side-chains, default is ''
+    --subselect-contacts      string     query to subselect inter-chain contacts, default is '[]'
+    --output-table-file       string     output file path for the table of global scores, default is ''
+    --output-dir              string     output directory path for all detailed results, default is ''
+    --help | -h                          flag to display help message and exit
+
+Standard input:
+    list of input PDB files
+
+Standard output:
+    space-separated table of global scores
+    
+Important note about output interpretation:
+    higher GNN scores are better, lower GNN scores are worse
+
+Examples:
+
+    find ./models/ -type f -name '*.pdb' | ./voronota-js-voroif-gnn-v2 --conda-path ~/miniconda3 --conda-env 'voroif-gnn-v2-env' > ./table.txt
+
+    find ./models/ -type f -name '*.pdb' | ./voronota-js-voroif-gnn-v2 > ./table.txt
+    
+    ./voronota-js-voroif-gnn-v2 --stdin-file ./list_of_input_paths.txt --output-table-file ./table.txt
+
+EOF
+exit 1
+}
+
+################################################################################
+
+function cat_stdin
+{
+	STDIN_SOURCE="$1"
+	if [ "$STDIN_SOURCE" == "_stream" ]
+	then
+		cat
+	else
+		cat "$STDIN_SOURCE"
+	fi
+}
+
+################################################################################
+
+SCRIPTDIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+
+readonly ZEROARG=$0
+ALLARGS=("$@")
+
+if [[ $ZEROARG == *"/"* ]]
+then
+	export PATH="${SCRIPTDIR}:${PATH}"
+fi
+
+command -v voronota-js &> /dev/null || { echo >&2 "Error: 'voronota-js' executable not in binaries path"; exit 1; }
+
+command -v voronota-js-fast-iface-data-graph-v2 &> /dev/null || { echo >&2 "Error: 'voronota-js-fast-iface-data-graph-v2' executable not in binaries path"; exit 1; }
+
+command -v voronota-js-fast-iface-data-graph-v2-stats &> /dev/null || { echo >&2 "Error: 'voronota-js-fast-iface-data-graph-v2-stats' executable not in binaries path"; exit 1; }
+
+GNN_BUNDLE_DIR=""
+GNN_MODELS_DIR=""
+CONDA_PATH=""
+CONDA_ENV="voroif-gnn-v2-env"
+MAX_PROCESSORS="1"
+STDIN_FILE="_stream"
+AS_ASSEMBLY="false"
+RESTRICT_INPUT="[]"
+RUN_FASPR=""
+SUBSELECT_CONTACTS="[]"
+OUTPUT_TABLE_FILE=""
+OUTPUT_DIR=""
+HELP_MODE="false"
+
+while [[ $# > 0 ]]
+do
+	OPTION="$1"
+	OPTARG="$2"
+	shift
+	case $OPTION in
+	--gnn-bundle-dir)
+		GNN_BUNDLE_DIR="$OPTARG"
+		shift
+		;;
+	--gnn-models-dir)
+		GNN_MODELS_DIR="$OPTARG"
+		shift
+		;;
+	--conda-path)
+		CONDA_PATH="$OPTARG"
+		shift
+		;;
+	--conda-env)
+		CONDA_ENV="$OPTARG"
+		shift
+		;;
+	--processors)
+		MAX_PROCESSORS="$OPTARG"
+		shift
+		;;
+	--stdin-file)
+		STDIN_FILE="$OPTARG"
+		shift
+		;;
+	--as-assembly)
+		AS_ASSEMBLY="$OPTARG"
+		shift
+		;;
+	--restrict-input)
+		RESTRICT_INPUT="$OPTARG"
+		shift
+		;;
+	--run-faspr)
+		RUN_FASPR="$OPTARG"
+		shift
+		;;
+	--subselect-contacts)
+		SUBSELECT_CONTACTS="$OPTARG"
+		shift
+		;;
+	--output-table-file)
+		OUTPUT_TABLE_FILE="$OPTARG"
+		shift
+		;;
+	--output-dir)
+		OUTPUT_DIR="$OPTARG"
+		shift
+		;;
+	-h|--help)
+		HELP_MODE="true"
+		;;
+	*)
+		echo >&2 "Error: invalid command line option '$OPTION'"
+		exit 1
+		;;
+	esac
+done
+
+if [ "$HELP_MODE" == "true" ]
+then
+	print_help_and_exit
+fi
+
+################################################################################
+
+if [ -z "$GNN_BUNDLE_DIR" ]
+then
+	GNN_BUNDLE_DIR="$SCRIPTDIR"
+fi
+
+if [ -z "$GNN_BUNDLE_DIR" ] || [ ! -d "$GNN_BUNDLE_DIR" ] || [ ! -s "${GNN_BUNDLE_DIR}/statistical_data/voromqalike_area_kbps_raw" ]
+then
+	echo >&2 "Error: invalid GNN bundle directory '$GNN_BUNDLE_DIR'"
+	exit 1
+fi
+
+if [ -z "$GNN_MODELS_DIR" ]
+then
+	GNN_MODELS_DIR="${GNN_BUNDLE_DIR}/trained_gnn_models/set1"
+fi
+
+if [ -z "$GNN_MODELS_DIR" ] || [ ! -d "$GNN_MODELS_DIR" ] || [ "$(find ${GNN_MODELS_DIR} -type f -name '*.state' | wc -l)" -lt "1" ]
+then
+	echo >&2 "Error: invalid GNN models directory '$GNN_MODELS_DIR'"
+	exit 1
+fi
+
+if [ "$STDIN_FILE" != "_stream" ] && [ ! -s "$STDIN_FILE" ]
+then
+	echo >&2 "Error: invalid stdin replacement file '$STDIN_FILE'"
+	exit 1
+fi
+
+################################################################################
+
+readonly TMPLDIR="$(mktemp -d)"
+trap "rm -r $TMPLDIR" EXIT
+
+#readonly TMPLDIR="${GNN_BUNDLE_DIR}/tmp"
+#mkdir -p "$TMPLDIR"
+
+cat_stdin "$STDIN_FILE" | egrep . | sort | uniq > "$TMPLDIR/input_structure_files"
+
+if [ ! -s "${TMPLDIR}/input_structure_files" ]
+then
+	echo >&2 "Error: no input_structure_files files provided"
+	exit 1
+fi
+
+while read -r INFILE
+do
+	if [ ! -s "$INFILE" ]
+	then
+		echo >&2 "Error: invalid input structure file '$INFILE'"
+		exit 1
+	fi
+done < "${TMPLDIR}/input_structure_files"
+
+find ${GNN_MODELS_DIR} -type f -name '*.state' > "${TMPLDIR}/input_gnn_model_files"
+
+if [ ! -s "${TMPLDIR}/input_gnn_model_files" ]
+then
+	echo >&2 "Error: no input GNN model files provided"
+	exit 1
+fi
+
+while read -r INFILE
+do
+	if [ ! -s "$INFILE" ]
+	then
+		echo >&2 "Error: invalid input GNN model file '$INFILE'"
+		exit 1
+	fi
+done < "${TMPLDIR}/input_gnn_model_files"
+
+################################################################################
+
+if [ -z "$CONDA_DEFAULT_ENV" ]
+then
+	if [ -z "$CONDA_PATH" ]
+	then
+		echo >&2 "Error: not in conda environment, and the conda path is not provided"
+		exit 1
+	fi
+	
+	if [ ! -s "${CONDA_PATH}/bin/activate" ]
+	then
+		echo >&2 "Error: no conda activation script '${CONDA_PATH}/bin/activate'"
+		exit 1
+	fi
+	
+	source "${CONDA_PATH}/bin/activate"
+fi
+
+if [ -n "$CONDA_ENV" ]
+then
+	if [ "$CONDA_DEFAULT_ENV" != "$CONDA_ENV" ]
+	then
+		conda activate "$CONDA_ENV"
+	fi
+	
+	if [ "$CONDA_DEFAULT_ENV" != "$CONDA_ENV" ]
+	then
+		echo >&2 "Error: no '$CONDA_ENV' environment"
+		exit 1
+	fi
+fi
+
+command -v R &> /dev/null || { echo >&2 "Error: 'R' executable not in binaries path"; exit 1; }
+
+################################################################################
+
+cat "${TMPLDIR}/input_structure_files" \
+| ${GNN_BUNDLE_DIR}/voronota-js-fast-iface-data-graph-v2 \
+  --config-akbps "${GNN_BUNDLE_DIR}/statistical_data/voromqalike_area_kbps_raw" \
+  --input _list \
+  --as-assembly "$AS_ASSEMBLY" \
+  --restrict-input "$RESTRICT_INPUT" \
+  --run-faspr "$RUN_FASPR" \
+  --subselect-contacts "$SUBSELECT_CONTACTS" \
+  --processors "$MAX_PROCESSORS" \
+  --output-data-prefix "${TMPLDIR}/input_data_graphs_raw/" \
+> "${TMPLDIR}/input_data_graphs_raw_prefixes"
+
+if [ ! -s "${TMPLDIR}/input_data_graphs_raw_prefixes" ]
+then
+	echo >&2 "Error: failed to generate raw data graphs"
+	exit 1
+fi
+
+cat "${TMPLDIR}/input_data_graphs_raw_prefixes" \
+| xargs -L 1 -P "$MAX_PROCESSORS" ${GNN_BUNDLE_DIR}/voronota-js-fast-iface-data-graph-v2-stats \
+  --standardize-columns-using-statistics "${GNN_BUNDLE_DIR}/statistical_data/data_graph_statistics_from_training_" \
+  --output-data-prefix "${TMPLDIR}/input_data_graphs_standardized/" \
+  --input-prefix
+
+find "${TMPLDIR}/input_data_graphs_standardized/" -type f -name '*nodes.csv' \
+> "${TMPLDIR}/input_data_graphs_standardized_node_files"
+
+if [ ! -s "${TMPLDIR}/input_data_graphs_standardized_node_files" ]
+then
+	echo >&2 "Error: failed to generate standardized data graphs"
+	exit 1
+fi
+
+cat "${TMPLDIR}/input_data_graphs_standardized_node_files" \
+| sed 's|nodes.csv$||' \
+> "${TMPLDIR}/input_data_graphs_standardized_prefixes"
+
+cat "${TMPLDIR}/input_data_graphs_standardized_node_files" \
+| while read -r INFILE
+do
+	echo "${TMPLDIR}/predictions/$(basename ${INFILE} nodes.csv)"
+done \
+> "${TMPLDIR}/output_prediction_files"
+
+cat "${TMPLDIR}/output_prediction_files" \
+| xargs -L 1 basename \
+| sed 's|^\(\S\+\)_$|\1|' \
+> "${TMPLDIR}/output_names"
+
+mkdir -p "${TMPLDIR}/predictions"
+
+################################################################################
+
+cd "${GNN_BUNDLE_DIR}/python_code"
+
+export PYTHONDONTWRITEBYTECODE="yes"
+
+python -W ignore "run_inference_for_multiple_graphs_using_multiple_models.py" \
+  "${TMPLDIR}/input_gnn_model_files" \
+  "${TMPLDIR}/input_data_graphs_standardized_prefixes" \
+  "${TMPLDIR}/output_prediction_files"
+
+cd - &> /dev/null
+
+################################################################################
+
+DETAILS_DIR="none"
+
+if [ -n "$OUTPUT_DIR" ]
+then
+	DETAILS_DIR="${TMPLDIR}/details"
+	cat "${TMPLDIR}/output_names" \
+	| while read -r NAME
+	do
+		mkdir -p "${DETAILS_DIR}/${NAME}"
+	done
+fi
+
+################################################################################
+
+R --vanilla --args "$TMPLDIR" "$DETAILS_DIR" << 'EOF' > /dev/null
+area_mean=11.319268357067;
+area_sd=9.53314111525015;
+IRCAD_goodness_mean=0-4.84478461812419;
+IRCAD_goodness_sd=44.1986710154664;
+
+args=commandArgs(TRUE);
+tmpldir=args[1];
+detailsdir=args[2];
+
+input_nodes_files=read.table(paste0(tmpldir, "/input_data_graphs_standardized_node_files"), header=FALSE, stringsAsFactors=FALSE)[[1]];
+output_prediction_files=read.table(paste0(tmpldir, "/output_prediction_files"), header=FALSE, stringsAsFactors=FALSE)[[1]];
+output_names=read.table(paste0(tmpldir, "/output_names"), header=FALSE, stringsAsFactors=FALSE)[[1]];
+
+results_summary=c();
+for(i in 1:length(input_nodes_files))
+{
+	input_nodes_file=input_nodes_files[i];
+	output_prediction_file=output_prediction_files[i];
+	output_name=output_names[i];
+	
+	nodes_dt=read.table(input_nodes_file, header=TRUE, stringsAsFactors=FALSE, sep=",");
+	nodes_dt$predicted_value=read.table(output_prediction_file, header=FALSE, stringsAsFactors=FALSE)[[1]];
+	nodes_dt$area_zscore=nodes_dt$area;
+	nodes_dt$area=pmax(rep(0.00001, nrow(nodes_dt)), (nodes_dt$area_zscore*area_sd)+area_mean);
+	nodes_dt$pgoodness=(nodes_dt$predicted_value*IRCAD_goodness_sd)+IRCAD_goodness_mean;
+	nodes_dt$pgoodness_average=nodes_dt$pgoodness/nodes_dt$area;
+	nodes_dt$pcadscore=(tanh((nodes_dt$pgoodness_average+0.2)/1.2-1)+1)/2;
+	
+	residue_ids=union(nodes_dt$ID1, nodes_dt$ID2);
+	N_residues=length(residue_ids);
+	results_per_residue=data.frame(ID=residue_ids, area=rep(0, N_residues), pgoodness=rep(0, N_residues));
+	for(i in 1:N_residues)
+	{
+		id=results_per_residue$ID[i];
+		sel=union(which(nodes_dt$ID1==id), which(nodes_dt$ID2==id));
+		results_per_residue$area[i]=sum(nodes_dt$area[sel]);
+		results_per_residue$pgoodness[i]=sum(nodes_dt$pgoodness[sel]);
+	}
+	results_per_residue$pgoodness_average=results_per_residue$pgoodness/results_per_residue$area;
+	results_per_residue$pcadscore=(tanh((results_per_residue$pgoodness_average+0.2)/1.2-1)+1)/2;
+	
+	iface_result=data.frame(ID=output_name);
+	iface_result$pgoodness=sum(nodes_dt$pgoodness);
+	iface_result$area=sum(nodes_dt$area);
+	iface_result$pgoodness_average=iface_result$pgoodness/iface_result$area;
+	iface_result$pcadscore=(tanh((iface_result$pgoodness_average+0.2)/1.2-1)+1)/2;
+	iface_result$num_of_residues=N_residues;
+	iface_result$residue_pcadscore=sum(results_per_residue$pcadscore*results_per_residue$area)/sum(results_per_residue$area);
+	
+	if(i==1){
+		results_summary=iface_result;
+	} else {
+		results_summary=rbind(results_summary, iface_result);
+	}
+	
+	if(detailsdir!="none")
+	{
+		write.table(iface_result, file=paste0(detailsdir, "/", output_name, "/results_global"), quote=FALSE, row.names=FALSE, col.names=TRUE);
+		
+		write.table(nodes_dt[,c("ID1", "ID2", "area", "pgoodness", "pgoodness_average", "pcadscore")], file=paste0(detailsdir, "/", output_name, "/results_per_contact"), quote=FALSE, row.names=FALSE, col.names=TRUE);
+		
+		results_per_residue$pcadscore_pretty=round(results_per_residue$pcadscore, digits=2);
+		write.table(results_per_residue, file=paste0(detailsdir, "/", output_name, "/results_per_residue"), quote=FALSE, row.names=FALSE, col.names=TRUE);
+	}
+}
+write.table(results_summary[order(0-results_summary$pgoodness, 0-results_summary$pgoodness_average),], file=paste0(tmpldir, "/results_summary"), quote=FALSE, row.names=FALSE, col.names=TRUE);
+EOF
+
+
+if [ ! -s "${TMPLDIR}/results_summary" ]
+then
+	echo >&2 "Error: failed to compute scores"
+	exit 1
+fi
+
+if [ "$DETAILS_DIR" != "none" ]
+then
+	find "${DETAILS_DIR}/" -type f -name 'results_per_residue' \
+	| while read -r TABLEFILE
+	do
+		TABLEDIR="$(dirname ${TABLEFILE})"
+		{
+			echo "local_scores_for_casp"
+			cat "$TABLEFILE" \
+			| tail -n +2 \
+			| awk '{print $1 " " $6}' \
+			| sed 's/R<\S\+//' \
+			| sed 's/c<//' \
+			| sed 's/r<//' \
+			| tr -d '>' \
+			| awk '{print $1 ":" $2}' \
+			| sort -V \
+			| tr '\n' ',' \
+			| sed 's/,$/\n/'
+		} > "${TABLEDIR}/results_per_residue_as_line_for_casp"
+		
+		paste "${TABLEDIR}/results_global" "${TABLEDIR}/results_per_residue_as_line_for_casp" \
+		| tr '\t' ' ' \
+		> "${TABLEDIR}/results_global_with_per_residue_as_line_for_casp"
+	done
+fi
+
+if [ -n "$OUTPUT_DIR" ]
+then
+	mkdir -p "$OUTPUT_DIR"
+	cat "${TMPLDIR}/results_summary" > "${OUTPUT_DIR}/results_summary"
+	if [ -d "$DETAILS_DIR" ]
+	then
+		rm -rf "${OUTPUT_DIR}/detailed_results"
+		cp -r "$DETAILS_DIR" "${OUTPUT_DIR}/detailed_results"
+		
+		cat "${TMPLDIR}/results_summary" | tail -n +2 | awk '{print NR " " $1}' \
+		| while read -r DETAILNUM DETAILID
+		do
+			if [ "$DETAILNUM" == "1" ]
+			then
+				cat "${DETAILS_DIR}/${DETAILID}/results_global_with_per_residue_as_line_for_casp"
+			else
+				cat "${DETAILS_DIR}/${DETAILID}/results_global_with_per_residue_as_line_for_casp" | tail -n +2
+			fi
+		done \
+		> "${OUTPUT_DIR}/results_summary_with_per_residue_scores"
+	fi
+fi
+
+if [ -n "$OUTPUT_TABLE_FILE" ]
+then
+	mkdir -p "$(dirname ${OUTPUT_TABLE_FILE})"
+	cat "${TMPLDIR}/results_summary" | column -t > "$OUTPUT_TABLE_FILE"
+else
+	cat "${TMPLDIR}/results_summary" | column -t
+fi
+
