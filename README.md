@@ -70,7 +70,7 @@ voronota-js-voroif-gnn-v2 -h
 
 The following is the help message output:
 
-```bash
+```
 
 'voronota-js-voroif-gnn-v2' scores protein-protein interfaces using the VoroIF-GNN-v2 method
 
