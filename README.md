@@ -8,7 +8,7 @@ The unique aspect of the VoroIF-GNN approach is that it considers the graph of i
 Compared to the first version of VoroIF-GNN, VoroIF-GNN-v2 uses new tessellation contact area-based pseudoenergy descriptors.
 The new descriptors are based on the observed and expected probabilities of contacts to occur and persist in folded conformations.
 The probabilities were derived from the contact areas calculated using [Voronota-LT](https://www.voronota.com/expansion_lt/) [2] for ensembles of structures collected from PDB.
-VoroIF-GNN-v2 graph neural network models was trained using the same collection of diverse docking models as the first version of VoroIF-GNN.
+VoroIF-GNN-v2 graph neural network models were trained using the same collection of diverse docking models as the first version of VoroIF-GNN.
 
 VoroIF-GNN-v2 was used by group "Olechnovic" that participated in the CAPRI Round 57 scoring challenge
 by running the VoroIF-jury (Voronoi tessellation-based InterFace jury) algorithm [3] that utilized VoroIF-GNN-v2 as the primary single-model scoring method.
@@ -40,7 +40,8 @@ The source code for 'voronota-js' is also included, and can be used to build 'vo
 ## Setting up an environment for running VoroIF-GNN-v2
 
 VoroIF-GNN-v2 requires PyTorch, PyTorch Geometric, Pandas, and R.
-Below is an example of setting up a suitable enviroinment:
+
+Below is an example of setting up a suitable environment:
 
 ```bash
 # install and activate Miniconda
@@ -48,26 +49,26 @@ wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
 bash Miniconda3-latest-Linux-x86_64.sh
 source ~/miniconda3/bin/activate
 
-# import and activate provided envitonment
+# import and activate provided environment
 conda env create --file voroif-gnn-v2-env.yaml
 conda activate voroif-gnn-v2-env
 
-# if you do not have R installed in you system, install it (below is an example for Ubuntu)
-sudo apt-get install r-base'
+# if you do not have R installed in your system, install it (below is an example for Ubuntu)
+sudo apt-get install r-base
 ```
 
 
 # Running the VoroIF-GNN-v2 command-line tool
 
-The overview of command-line options, as well as input and output, is printed when running the "voronota-js-fast-iface-data-graph-v2" executable with "--help" or "-h" flags:
+The overview of command-line options, as well as input and output, is printed when running the "voronota-js-voroif-gnn-v2" executable with "--help" or "-h" flags:
 
 ```bash
-voronota-js-fast-iface-data-graph-v2 --help
+voronota-js-voroif-gnn-v2 --help
 
-voronota-js-fast-iface-data-graph-v2 -h
+voronota-js-voroif-gnn-v2 -h
 ```
 
-The overview text is the following:
+The following is the help message output:
 
 ```bash
 
