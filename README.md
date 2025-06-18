@@ -1,6 +1,6 @@
 # About VoroIF-GNN-v2
 
-VoroIF-GNN-v2 scores protein-protein interfaces, it is a new version of VoroIF-GNN [1] method.
+VoroIF-GNN-v2 scores protein-protein interfaces, it is a new version of the [VoroIF-GNN](https://doi.org/10.1002/prot.26554) [1] method.
 The core idea of VoroIF-GNN remained the same - to train and apply a graph attention-based graph neural network that predicts CAD-score-based local scores
 for interface residue-residue contacts that can be summed into global, interface-level scores.
 The unique aspect of the VoroIF-GNN approach is that it considers the graph of interface contacts and their adjacencies, not the graph of atoms or residues.
@@ -13,6 +13,8 @@ VoroIF-GNN-v2 graph neural network models was trained using the same collection 
 VoroIF-GNN-v2 was used by group "Olechnovic" that participated in the CAPRI Round 57 scoring challenge
 by running the VoroIF-jury (Voronoi tessellation-based InterFace jury) algorithm [3] that utilized VoroIF-GNN-v2 as the primary single-model scoring method.
 According to the official CAPRI scoring challenge assessment presented in the CASP16 conference, the results of "Olechnovic" were [relatively good](https://bsky.app/profile/capridock.bsky.social/post/3lcdk2v7xhs2c).
+
+Both VoroIF-GNN and VoroIF-GNN-v2 were developed by Kliment Olechnovic ([www.kliment.lt](https://www.kliment.lt)).
 
 # Obtaining and setting up VoroIF-GNN-v2
 
